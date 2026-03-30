@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-缓存投毒验证脚本 — Authority NS RDATA Bailiwick Check
+Cache poisoning verification — Authority NS RDATA bailiwick check.
 
-自动完成：基线检查 → 触发攻击 → 等待 → 检测投毒 → 二次验证
+Runs automatically: baseline → trigger attack → wait → detect poisoning → second check.
 
-测试的安全问题：解析器是否对合法响应中 Authority 段的 NS 记录执行 bailiwick check？
-如果查询 attacker.lab 的响应中携带了 victim.lab 的 NS 记录，解析器是否会拒绝缓存？
+Security question under test: does the resolver apply a bailiwick check to NS records
+in the Authority section of an otherwise legitimate response? If a response for
+attacker.lab carries NS records for victim.lab, does the resolver refuse to cache them?
 
-参考: CVE-2025-11411 (Unbound), CVE-2021-25220 (BIND9)
+See: CVE-2025-11411 (Unbound), CVE-2021-25220 (BIND9)
 """
 
 import argparse
@@ -21,7 +22,7 @@ import dns.rdatatype
 
 
 def query_dns(server: str, port: int, qname: str, rdtype: str, timeout: float = 5.0):
-    """发送 DNS 查询并返回完整响应对象"""
+    """Send a DNS query and return the full response object."""
     q = dns.message.make_query(qname, rdtype)
     try:
         resp = dns.query.udp(q, server, port=port, timeout=timeout)
@@ -29,12 +30,12 @@ def query_dns(server: str, port: int, qname: str, rdtype: str, timeout: float = 
     except dns.exception.Timeout:
         return None
     except Exception as e:
-        print(f"  [查询错误] {e}")
+        print(f"  [query error] {e}")
         return None
 
 
 def extract_answer_ips(resp) -> list:
-    """从 Answer 段提取所有 A 记录的 IP"""
+    """Extract all A record IPs from the Answer section."""
     ips = []
     if resp is None:
         return ips
@@ -46,7 +47,7 @@ def extract_answer_ips(resp) -> list:
 
 
 def extract_ns_names(resp) -> list:
-    """从 Answer 和 Authority 段提取所有 NS 记录的 NSDNAME"""
+    """Extract NSDNAME from all NS records in Answer and Authority."""
     ns_list = []
     if resp is None:
         return ns_list
@@ -59,7 +60,7 @@ def extract_ns_names(resp) -> list:
 
 
 def check_all_sections_for_evil(resp) -> list:
-    """在 Answer / Authority / Additional 所有段中搜索恶意记录"""
+    """Search Answer / Authority / Additional for malicious-looking records."""
     evil = []
     if resp is None:
         return evil
@@ -73,11 +74,11 @@ def check_all_sections_for_evil(resp) -> list:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="DNS 缓存投毒验证 — Bailiwick Check 测试")
-    parser.add_argument("--target-ip", required=True, help="被测解析器 IP")
-    parser.add_argument("--target-port", type=int, required=True, help="被测解析器端口")
-    parser.add_argument("--target-name", required=True, help="被测软件名称")
-    parser.add_argument("--wait", type=float, default=2.0, help="攻击后等待秒数")
+    parser = argparse.ArgumentParser(description="DNS cache poisoning check — bailiwick test")
+    parser.add_argument("--target-ip", required=True, help="Resolver under test (IP)")
+    parser.add_argument("--target-port", type=int, required=True, help="Resolver under test (port)")
+    parser.add_argument("--target-name", required=True, help="Software name for the resolver under test")
+    parser.add_argument("--wait", type=float, default=2.0, help="Seconds to wait after trigger before detection")
     args = parser.parse_args()
 
     srv = args.target_ip
@@ -85,104 +86,104 @@ def main():
     name = args.target_name
 
     print(f"\n{'='*60}")
-    print(f"  DNS 缓存投毒测试 — {name}")
-    print(f"  目标: {srv}:{port}")
-    print(f"  攻击方式: Out-of-bailiwick Authority NS in legitimate response")
+    print(f"  DNS cache poisoning test — {name}")
+    print(f"  Target: {srv}:{port}")
+    print(f"  Attack: out-of-bailiwick Authority NS in a legitimate response")
     print(f"{'='*60}\n")
 
     vulnerable = False
 
-    # ── Step 1: 基线检查 ──
-    print("[Step 1] 基线: 查询 www.victim.lab A")
+    # ── Step 1: Baseline ──
+    print("[Step 1] Baseline: query www.victim.lab A")
     resp = query_dns(srv, port, "www.victim.lab", "A")
     if resp is None:
-        print("  → 超时，无响应")
-        print("  ✗ 基线检查失败，无法继续测试")
+        print("  → Timeout, no response")
+        print("  ✗ Baseline failed; cannot continue")
         return False
 
     ips = extract_answer_ips(resp)
     if "1.2.3.4" in ips:
-        print(f"  → {', '.join(ips)} ✓ (正常)")
+        print(f"  → {', '.join(ips)} ✓ (expected)")
     else:
-        print(f"  → {', '.join(ips) or '无结果'}")
-        print("  ⚠ 基线异常（期望 1.2.3.4），可能需要清除缓存后重试")
+        print(f"  → {', '.join(ips) or 'no results'}")
+        print("  ⚠ Baseline unexpected (want 1.2.3.4); try flushing cache and retry")
 
-    # ── Step 2: 触发攻击 ──
-    print(f"\n[Step 2] 触发: 查询 test.attacker.lab A")
-    print(f"  （该查询将被转发到恶意权威服务器，响应中携带 victim.lab 的恶意 NS）")
+    # ── Step 2: Trigger ──
+    print(f"\n[Step 2] Trigger: query test.attacker.lab A")
+    print(f"  (Forwarded to the malicious authoritative server; response includes bogus victim.lab NS)")
     resp = query_dns(srv, port, "test.attacker.lab", "A")
     if resp is None:
-        print("  → 超时，恶意服务器可能未启动或路由不通")
-        print("  ✗ 无法触发攻击，测试终止")
+        print("  → Timeout; malicious server may be down or unreachable")
+        print("  ✗ Cannot trigger attack; aborting")
         return False
 
     ips = extract_answer_ips(resp)
-    print(f"  → Answer: {', '.join(ips) or '无'}")
+    print(f"  → Answer: {', '.join(ips) or 'none'}")
 
     evil_in_trigger = check_all_sections_for_evil(resp)
     if evil_in_trigger:
-        print(f"  → ⚠ 触发响应中直接包含恶意记录:")
+        print(f"  → ⚠ Malicious records appear directly in the trigger response:")
         for e in evil_in_trigger:
             print(f"    {e}")
     else:
-        print(f"  → 触发响应中未直接暴露恶意记录（可能已被解析器过滤）")
+        print(f"  → No malicious records visible in trigger response (may have been filtered)")
 
-    # ── Step 3: 等待 ──
-    print(f"\n[Step 3] 等待 {args.wait} 秒让缓存生效...")
+    # ── Step 3: Wait ──
+    print(f"\n[Step 3] Waiting {args.wait} s for cache effects...")
     time.sleep(args.wait)
 
-    # ── Step 4: 检测 NS 投毒 ──
-    print(f"\n[Step 4] 检测: 查询 victim.lab NS")
+    # ── Step 4: Detect NS poisoning ──
+    print(f"\n[Step 4] Detect: query victim.lab NS")
     resp = query_dns(srv, port, "victim.lab", "NS")
     if resp is None:
-        print("  → 超时")
+        print("  → Timeout")
     else:
         ns_records = extract_ns_names(resp)
         if ns_records:
             for owner, target in ns_records:
-                marker = " ⚠ OUT-OF-BAILIWICK — 缓存已被投毒!" if "evil" in target.lower() else ""
+                marker = " ⚠ OUT-OF-BAILIWICK — cache poisoned!" if "evil" in target.lower() else ""
                 print(f"  → {owner} NS {target}{marker}")
                 if "evil" in target.lower():
                     vulnerable = True
         else:
-            print(f"  → 未返回 NS 记录")
+            print(f"  → No NS records returned")
 
         evil_here = check_all_sections_for_evil(resp)
         for e in evil_here:
             if "evil" in e.lower():
-                print(f"  → ⚠ 发现恶意数据: {e}")
+                print(f"  → ⚠ Malicious data: {e}")
                 vulnerable = True
 
-    # ── Step 5: 二次验证 ──
-    print(f"\n[Step 5] 二次验证: 再次查询 www.victim.lab A")
+    # ── Step 5: Second verification ──
+    print(f"\n[Step 5] Verify: query www.victim.lab A again")
     resp = query_dns(srv, port, "www.victim.lab", "A")
     if resp is None:
-        print("  → 超时（可能因 NS 被劫持到不存在的服务器）")
+        print("  → Timeout (NS may point at non-existent servers)")
         if vulnerable:
-            print("  → ⚠ 结合 Step 4 结果，这可能是流量被劫持的表现")
+            print("  → ⚠ Together with Step 4, this may indicate hijacked resolution")
     else:
         ips = extract_answer_ips(resp)
         rcode_text = dns.rcode.to_text(resp.rcode())
-        print(f"  → {', '.join(ips) or f'无 A 记录 (RCODE={rcode_text})'}")
+        print(f"  → {', '.join(ips) or f'no A records (RCODE={rcode_text})'}")
         if "172.21.0.99" in ips:
-            print(f"  → ⚠ 流量被劫持到攻击者 IP!")
+            print(f"  → ⚠ Traffic redirected to attacker IP!")
             vulnerable = True
         elif "1.2.3.4" in ips:
-            print(f"  → ✓ 解析结果正常，未被劫持")
+            print(f"  → ✓ Resolution looks normal; not hijacked")
         elif not ips and rcode_text == "SERVFAIL":
             if vulnerable:
-                print(f"  → ⚠ SERVFAIL 可能因 NS 被劫持到不可达地址导致")
+                print(f"  → ⚠ SERVFAIL may be due to NS pointing at unreachable addresses")
 
-    # ── 结论 ──
+    # ── Conclusion ──
     print(f"\n{'='*60}")
     if vulnerable:
-        print(f"  ⚠ 结论: {name} 存在 VULNERABLE")
-        print(f"  Authority-NS-RDATA 缓存投毒漏洞已确认!")
-        print(f"  解析器未正确执行 bailiwick check，")
-        print(f"  缓存了 out-of-bailiwick 的恶意 NS 记录。")
+        print(f"  ⚠ Conclusion: {name} is VULNERABLE")
+        print(f"  Authority-NS-RDATA cache poisoning confirmed.")
+        print(f"  The resolver did not enforce bailiwick checks correctly and cached")
+        print(f"  out-of-bailiwick malicious NS records.")
     else:
-        print(f"  ✓ 结论: {name} is NOT VULNERABLE")
-        print(f"  解析器正确拒绝了 out-of-bailiwick 的 Authority NS 记录。")
+        print(f"  ✓ Conclusion: {name} is NOT VULNERABLE")
+        print(f"  The resolver correctly rejected out-of-bailiwick Authority NS records.")
     print(f"{'='*60}\n")
 
     return vulnerable

@@ -207,7 +207,7 @@ python3 poc_unsolicited_response.py
 | 目标 | 版本 | 过滤 Authority 段恶意 NS | 缓存投毒 | 向下游暴露恶意数据 | 结论 |
 |------|------|-------------------------|---------|-------------------|------|
 | Technitium | v14.3 | **是** — 完全过滤 | 否 | 否 | NOT VULNERABLE |
-| dnsmasq | v2.91 | **否** — 原样透传 | 否（不缓存 Authority 段） | **是** | NOT VULNERABLE（但透传恶意数据） |
+| dnsmasq | v2.91 | **否** — 原样透传 | 否（不缓存 Authority 段） | **是** | VULNERABLE（透传恶意数据） |
 
 ### 关键发现
 

@@ -29,13 +29,15 @@ The attacker does not need to spoof IPs or guess the transaction ID. All standar
 
 ## Files
 
-| File | Description |
-|------|-------------|
-| `malicious_auth_server.py` | Malicious authoritative server: for `*.attacker.lab` queries returns a legitimate Answer plus out-of-bailiwick Authority NS |
-| `test_cache_poison.py` | Automated test script: baseline → trigger → wait → detect → verify |
-| `run_full_test.sh` | One-shot test: start malicious server, test both targets, summarize |
-| `poc_unsolicited_response.py` | Extra PoC: tests whether the resolver accepts unsolicited forged responses (stdlib only) |
-| `b_results/Spoofed_Response_Authority_NS_RDATA_response.txt` | Original PoC threat-model write-up |
+
+| File                                                         | Description                                                                                                                 |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `malicious_auth_server.py`                                   | Malicious authoritative server: for `*.attacker.lab` queries returns a legitimate Answer plus out-of-bailiwick Authority NS |
+| `test_cache_poison.py`                                       | Automated test script: baseline → trigger → wait → detect → verify                                                          |
+| `run_full_test.sh`                                           | One-shot test: start malicious server, test both targets, summarize                                                         |
+| `poc_unsolicited_response.py`                                | Extra PoC: tests whether the resolver accepts unsolicited forged responses (stdlib only)                                    |
+| `b_results/Spoofed_Response_Authority_NS_RDATA_response.txt` | Original PoC threat-model write-up                                                                                          |
+
 
 ## Requirements
 
@@ -63,11 +65,13 @@ docker compose up -d
 
 This brings up three containers:
 
-| Container | IP | Host ports | Role |
-|-----------|-----|------------|------|
-| `bind9` | 172.21.0.10 | 5300 | Authoritative (victim.lab + attacker.lab) |
-| `technitium` | 172.21.0.20 | 5320 (DNS) / 5380 (Web UI) | Recursive resolver (target 1) |
-| `dnsmasq` | 172.21.0.30 | 5322 | Caching forwarder (target 2) |
+
+| Container    | IP          | Host ports                 | Role                                      |
+| ------------ | ----------- | -------------------------- | ----------------------------------------- |
+| `bind9`      | 172.21.0.10 | 5300                       | Authoritative (victim.lab + attacker.lab) |
+| `technitium` | 172.21.0.20 | 5320 (DNS) / 5380 (Web UI) | Recursive resolver (target 1)             |
+| `dnsmasq`    | 172.21.0.30 | 5322                       | Caching forwarder (target 2)              |
+
 
 ### 2. Configure Technitium
 
@@ -205,10 +209,12 @@ python3 poc_unsolicited_response.py
 
 ## Observed results
 
-| Target | Version | Filters malicious Authority NS | Cache poisoning | Exposes malicious data downstream | Verdict |
-|--------|---------|--------------------------------|-----------------|-----------------------------------|---------|
-| Technitium | v14.3 | **Yes** — fully stripped | No | No | NOT VULNERABLE |
-| dnsmasq | v2.91 | **No** — passed through | No (does not cache Authority) | **Yes** | VULNERABLE (pass-through) |
+
+| Target     | Version | Filters malicious Authority NS | Cache poisoning               | Exposes malicious data downstream | Verdict                   |
+| ---------- | ------- | ------------------------------ | ----------------------------- | --------------------------------- | ------------------------- |
+| Technitium | v14.3   | **Yes** — fully stripped       | No                            | No                                | NOT VULNERABLE            |
+| dnsmasq    | v2.91   | **No** — passed through        | No (does not cache Authority) | **Yes**                           | VULNERABLE (pass-through) |
+
 
 ### Takeaways
 

